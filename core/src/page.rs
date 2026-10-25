@@ -1,6 +1,6 @@
-// use serde::de::Error as _;
-use serde::{Deserialize, Serialize};
-// use serde_yaml_ng::{Mapping, Value};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_yaml_ng::{Mapping, Value};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +15,9 @@ pub struct Page {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FrontMatter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infobox: Option<Infobox>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
 
@@ -25,6 +28,52 @@ pub struct FrontMatter {
 impl FrontMatter {
     fn is_empty(&self) -> bool {
         *self == FrontMatter::default()
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Infobox {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>, // None = show the page title
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>, // file name inside images/
+
+    #[serde(default)]
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Field {
+    pub label: String,
+    pub value: String,
+}
+
+impl Serialize for Field {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut mapping = Mapping::new();
+        mapping.insert(
+            Value::String(self.label.clone()),
+            Value::String(self.value.clone()),
+        );
+        mapping.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mapping = Mapping::deserialize(deserializer)?;
+        if mapping.len() != 1 {
+            return Err(D::Error::custom(
+                "each infobox field must be one `Label: value` pair",
+            ));
+        }
+
+        let (k, v) = mapping.into_iter().next().unwrap();
+        Ok(Field {
+            label: scalar(k).map_err(D::Error::custom)?,
+            value: scalar(v).map_err(D::Error::custom)?,
+        })
     }
 }
 
@@ -73,6 +122,18 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Convert a YAML value into a plain text string, if possible. Returns an error if the value is not
+/// a string, number, boolean, or null.
+fn scalar(value: Value) -> Result<String, &'static str> {
+    match value {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Null => Ok(String::new()),
+        _ => Err("infobox field value must be plain text (quote values that start with `[[`)"),
+    }
+}
+
 /// Split the given text into front matter and body, if front matter is present.
 fn split(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix("---\n")?;
@@ -91,6 +152,35 @@ fn split(text: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VARN: &str = r#"---
+infobox:
+    image: varn-banner.jpg
+    fields:
+        - Capital: "[[Orhold]]"
+        - Ruler: "[[Queen Ilsa]]"
+        - Founded: 412 AR
+        - Religion: The Old Flame
+categories: [Nations, Northern Realms]
+quicknote: true        # only present on unfinished quick notes
+---
+
+Varn is the northernmost realm of the continent, ruled from [[Orhold]]
+by [[Queen Ilsa]]. Its largest port is [[Saltmere|the port of Saltmere]].
+
+![[varn-banner.jpg]]
+
+## History
+
+Founded in 412 AR after the collapse of…
+"#;
+
+    fn field(l: &str, v: &str) -> Field {
+        Field {
+            label: l.into(),
+            value: v.into(),
+        }
+    }
 
     fn reparse(p: &Page) -> Page {
         parse_page(&p.title, &p.folder, &serialize_page(p))
@@ -233,5 +323,114 @@ mod tests {
             assert_eq!(p.body, text);
             assert_eq!(serialize_page(&p), text);
         }
+    }
+
+    #[test]
+    fn parses_spec_example() {
+        let p = parse_page("Kingdom of Varn", "Nations", VARN);
+
+        assert_eq!(p.front_error, None);
+
+        let ib = p.front.infobox.as_ref().unwrap();
+
+        assert_eq!(ib.image.as_deref(), Some("varn-banner.jpg"));
+        assert_eq!(
+            ib.fields,
+            vec![
+                field("Capital", "[[Orhold]]"),
+                field("Ruler", "[[Queen Ilsa]]"),
+                field("Founded", "412 AR"),
+                field("Religion", "The Old Flame"),
+            ]
+        );
+        assert_eq!(p.front.categories, vec!["Nations", "Northern Realms"]);
+        assert!(p.front.quicknote);
+        assert!(p.body.starts_with("Varn is the northernmost realm"));
+        assert!(p.body.ends_with("collapse of…\n"));
+    }
+
+    #[test]
+    fn spec_example_round_trips() {
+        let p = parse_page("Kingdom of Varn", "Nations", VARN);
+        let again = reparse(&p);
+
+        assert_eq!(again.front, p.front);
+        assert_eq!(again.body, p.body);
+    }
+
+    #[test]
+    fn repeated_labels_keep_order() {
+        let text = "---\ninfobox:\n  fields:\n    - Child: Ana\n    - Child: Bo\n    - Spouse: Cy\n---\n\nx\n";
+        let p = parse_page("T", "", text);
+
+        assert_eq!(
+            p.front.infobox.as_ref().unwrap().fields,
+            vec![
+                field("Child", "Ana"),
+                field("Child", "Bo"),
+                field("Spouse", "Cy")
+            ]
+        );
+        assert_eq!(reparse(&p).front, p.front);
+    }
+
+    #[test]
+    fn scalar_values_become_text() {
+        let text =
+            "---\ninfobox:\n  fields:\n    - Founded: 412\n    - Alive: true\n    - Motto:\n---\n";
+        let p = parse_page("T", "", text);
+
+        assert_eq!(
+            p.front.infobox.as_ref().unwrap().fields,
+            vec![
+                field("Founded", "412"),
+                field("Alive", "true"),
+                field("Motto", "")
+            ]
+        );
+    }
+
+    #[test]
+    fn tricky_values_survive_save() {
+        let mut p = parse_page("T", "", "body\n");
+        let vals = [
+            "[[Orhold]]",
+            "412",
+            "true",
+            "a: b",
+            "- x",
+            "#hash",
+            "",
+            "  padded  ",
+            "line\nbreak",
+        ];
+        p.front.infobox = Some(Infobox {
+            fields: vals.iter().map(|v| field("L", v)).collect(),
+            ..Default::default()
+        });
+        let again = reparse(&p);
+
+        assert_eq!(again.front_error, None);
+        assert_eq!(again.front, p.front);
+        assert_eq!(again.body, "body\n");
+    }
+
+    #[test]
+    fn unquoted_link_value_falls_back_to_raw() {
+        // YAML reads an unquoted [[Orhold]] as a list inside a list
+        let text = "---\ninfobox:\n  fields:\n    - Capital: [[Orhold]]\n---\n\nx\n";
+        let p = parse_page("T", "", text);
+
+        assert!(p.front_error.is_some());
+        assert_eq!(serialize_page(&p), text);
+    }
+
+    #[test]
+    fn two_pair_field_falls_back_to_raw() {
+        let text = "---\ninfobox:\n  fields:\n    - A: 1\n      B: 2\n---\nx\n";
+        let p = parse_page("T", "", text);
+
+        assert!(p.front_error.is_some());
+        assert_eq!(serialize_page(&p), text);
     }
 }
