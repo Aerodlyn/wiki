@@ -19,7 +19,7 @@ pub struct FrontMatter {
     pub categories: Vec<String>,
 
     #[serde(default, skip_serializing_if = "is_false")]
-    pub quicknotes: bool,
+    pub quicknote: bool,
 }
 
 impl FrontMatter {
@@ -117,16 +117,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_categories_and_quicknotes() {
+    fn parses_categories_and_quicknote() {
         let p = parse_page(
             "Varn",
             "Nations",
-            "---\ncategories: [Nations, Northern Realms]\nquicknotes: true\n---\n\nVarn is cold.",
+            "---\ncategories: [Nations, Northern Realms]\nquicknote: true\n---\n\nVarn is cold.",
         );
 
         assert_eq!(p.front_error, None);
         assert_eq!(p.front.categories, vec!["Nations", "Northern Realms"]);
-        assert!(p.front.quicknotes);
+        assert!(p.front.quicknote);
         assert_eq!(p.body, "Varn is cold.");
         assert_eq!((p.title.as_str(), p.folder.as_str()), ("Varn", "Nations"))
     }
@@ -144,11 +144,11 @@ mod tests {
         let mut p = parse_page(
             "T",
             "",
-            "---\nquicknotes: true\ncategories: [Test]\n---\n\nx\n",
+            "---\nquicknote: true\ncategories: [Test]\n---\n\nx\n",
         );
-        p.front.quicknotes = false;
+        p.front.quicknote = false;
 
-        assert!(!serialize_page(&p).contains("quicknotes"));
+        assert!(!serialize_page(&p).contains("quicknote"));
     }
 
     #[test]
