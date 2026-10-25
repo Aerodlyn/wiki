@@ -23,6 +23,9 @@ pub struct FrontMatter {
 
     #[serde(default, skip_serializing_if = "is_false")]
     pub quicknote: bool,
+
+    #[serde(flatten)]
+    pub extra: Mapping, // store unknown keys
 }
 
 impl FrontMatter {
@@ -41,6 +44,9 @@ pub struct Infobox {
 
     #[serde(default)]
     pub fields: Vec<Field>,
+
+    #[serde(flatten)]
+    pub extra: Mapping, // store unknown keys
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -432,5 +438,16 @@ Founded in 412 AR after the collapse of…
 
         assert!(p.front_error.is_some());
         assert_eq!(serialize_page(&p), text);
+    }
+
+    #[test]
+    fn unknown_keys_survive_save() {
+        let text = "---\naliases: [Varn]\ninfobox:\n  caption: Banner\n  fields: []\nrating: 5\n---\n\nx\n";
+        let p = parse_page("T", "", text);
+        let out = serialize_page(&p);
+        assert!(out.contains("aliases:"), "{out}");
+        assert!(out.contains("rating: 5"), "{out}");
+        assert!(out.contains("caption: Banner"), "{out}");
+        assert_eq!(reparse(&p).front, p.front);
     }
 }
