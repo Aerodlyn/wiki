@@ -47,7 +47,7 @@ pub fn page_links(page: &Page) -> Vec<Link> {
 pub fn render(markdown: &str, exists: impl Fn(&str) -> bool) -> String {
     let arena = Arena::new();
     let root = parse_document(&arena, markdown, &options());
-    
+
     for (node, link) in links_in(root) {
         let html = arena.alloc(NodeValue::HtmlInline(link_html(&link, &exists)).into());
         node.insert_before(html);
@@ -57,6 +57,14 @@ pub fn render(markdown: &str, exists: impl Fn(&str) -> bool) -> String {
     let mut out = String::new();
     format_html(root, &options(), &mut out).unwrap();
     SANITIZER.clean(&out).to_string()
+}
+
+pub fn render_inline(text: &str, exists: impl Fn(&str) -> bool) -> String {
+    let html = render(text, &exists);
+    match html.strip_prefix("<p>").and_then(|s| s.strip_suffix("</p>\n")) {
+        Some(inner) if !inner.contains("<p>") => inner.to_string(),
+        _ => html,
+    }
 }
 
 fn collapse(s: &str) -> String {
@@ -295,5 +303,15 @@ mod tests {
         ] {
             assert!(html.contains(s), "missing {s} in {html}");
         }
+    }
+
+    #[test]
+    fn inline_values_have_no_paragraph() {
+        assert_eq!(
+            render_inline("[[Orhold]], founded 412 AR", known),
+            "<a class=\"wikilink\" data-title=\"Orhold\" href=\"#\">Orhold</a>, founded 412 AR"
+        );
+        assert_eq!(render_inline("", known), "");
+        assert_eq!(render_inline("a\n\nb", known), "<p>a</p>\n<p>b</p>\n");
     }
 }
